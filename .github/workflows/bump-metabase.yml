@@ -1,0 +1,183 @@
+# DATA-91: keep the pinned Metabase version this repo deploys to Render from
+# drifting indefinitely behind upstream releases.
+#
+# What this does, and — as importantly — what it does NOT do:
+#   - Checks github.com/metabase/metabase releases (not Docker Hub tags, which
+#     mix in rolling `latest`/`v0.63.x` tags and 4-part nightly builds).
+#   - Only considers a release once it has been out for >= 7 days (matches the
+#     `minimumReleaseAge` convention already used in corona-admin/renovate.json),
+#     so a release that gets hot-fixed or yanked shortly after publishing is
+#     skipped automatically.
+#   - Opens a PR only. It never auto-merges, regardless of whether the bump is
+#     a same-line bugfix ("minor" in Metabase's own — inverted — versioning)
+#     or a new feature line ("major", which can carry an irreversible app-DB
+#     migration). A human always reviews and merges.
+#   - Never crosses the 0.x <-> 1.x boundary (OSS vs Enterprise) automatically.
+#   - Never touches Slack credentials belonging to any other StoreKit
+#     repo/service. It posts through a webhook scoped only to this repo and
+#     only able to post to one channel — see the PR body this workflow
+#     generates for why that boundary was chosen over the alternatives.
+#
+# Untrusted content note: release notes fetched from upstream are treated as
+# data, never spliced into a shell script via `${{ }}` — everything from
+# steps.*.outputs is passed through `env:` and read back as `$VAR`, per
+# GitHub's script-injection hardening guidance.
+name: Bump Metabase version
+
+on:
+    schedule:
+        - cron: '0 9 * * 1' # weekly is plenty given the 7-day cool-off
+    workflow_dispatch: {}
+
+permissions:
+    contents: write
+    pull-requests: write
+
+jobs:
+    bump:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: '22'
+
+            - name: Run unit tests (version parsing / cool-off / classification)
+              run: node --test scripts/*.test.mjs
+
+            - name: Check for an eligible release
+              id: check
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: node scripts/check-and-bump.mjs
+
+            - name: Skip if a PR for this branch is already open
+              id: existing_pr
+              if: steps.check.outputs.should_bump == 'true'
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  TO: ${{ steps.check.outputs.to }}
+              run: |
+                  branch="metabase-bump/$TO"
+                  count=$(gh pr list --head "$branch" --state open --json number --jq 'length')
+                  echo "branch=$branch" >> "$GITHUB_OUTPUT"
+                  if [ "$count" -gt 0 ]; then
+                    echo "already_open=true" >> "$GITHUB_OUTPUT"
+                  else
+                    echo "already_open=false" >> "$GITHUB_OUTPUT"
+                  fi
+
+            - name: Open the bump PR
+              id: pr
+              if: steps.check.outputs.should_bump == 'true' && steps.existing_pr.outputs.already_open == 'false'
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  BRANCH: ${{ steps.existing_pr.outputs.branch }}
+                  FROM: ${{ steps.check.outputs.from }}
+                  TO: ${{ steps.check.outputs.to }}
+                  KIND: ${{ steps.check.outputs.kind }}
+                  CHANGELOG_URL: ${{ steps.check.outputs.changelog_url }}
+                  CHANGELOG_SUMMARY: ${{ steps.check.outputs.changelog_summary }}
+              run: |
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+                  git switch -c "$BRANCH"
+                  git commit -am "Bump Metabase $FROM -> $TO ($KIND)"
+                  git push -u origin "$BRANCH"
+
+                  if [ "$KIND" = "major" ]; then
+                    KIND_NOTE="⚠️ **Major** release — Metabase's versioning inverts semver, so this is a new feature line that can carry an **irreversible app-DB migration**. Back up the app DB before merging/deploying."
+                  else
+                    KIND_NOTE="**Minor** release — same feature line, bug/security fixes only."
+                  fi
+                  export KIND_NOTE
+
+                  # The heredoc delimiter is quoted ('BODY') so bash performs no
+                  # expansion at all here — the markdown below is full of literal
+                  # backticks that an unquoted heredoc would try to execute as
+                  # command substitution. Substitution of $FROM/$TO/etc. happens
+                  # afterwards, in Node, as plain literal string replacement (no
+                  # regex, no re-parsing as shell) — safe even though
+                  # CHANGELOG_SUMMARY is untrusted upstream release-note text.
+                  template=$(cat <<'BODY'
+                  ## What changed
+                  Pinned Metabase version: `$FROM` -> `$TO`.
+
+                  $KIND_NOTE
+
+                  Release notes: $CHANGELOG_URL
+
+                  <details><summary>Changelog summary</summary>
+
+                  $CHANGELOG_SUMMARY
+
+                  </details>
+
+                  ## Automation (DATA-91)
+                  Opened automatically by the scheduled `bump-metabase.yml` workflow — checks
+                  GitHub releases for `metabase/metabase`, applies a 7-day cool-off, and opens
+                  a PR only (never auto-merges). Manual bumps and this workflow can coexist.
+
+                  ### Design tradeoffs considered for the Slack notification
+                  This repo has no runtime and no existing GitHub<->corona-api trust
+                  relationship, so posting the "bumped" notification was a real design
+                  decision, not just plumbing. Options considered:
+
+                  - **Run this in corona-api's Inngest, calling its Slack bot-token service.**
+                    Rejected — this repo needs to open its own PR with its own `GITHUB_TOKEN`;
+                    corona-api has no reason to reach into an unrelated repo's PRs, and doing
+                    so would add cross-repo coupling for no shared data.
+                  - **Reuse corona-api's Slack bot token directly in this repo.** Rejected —
+                    that token has broad Slack Web API access; duplicating it here makes it
+                    harder to rotate/audit and puts a powerful credential in a second, lower-
+                    scrutiny place.
+                  - **Add a new corona-api webhook endpoint** (mirroring
+                    `lib/routes/woflow/import.js`'s shared-secret pattern) that this workflow
+                    calls after opening the PR, which then calls `slackService`. Rejected — it
+                    requires minting a brand-new GitHub<->corona-api trust relationship that
+                    doesn't exist today (a new secret in both Render's env and this repo's
+                    Actions secrets, a new route, a new Joi schema) for a feature that isn't
+                    corona-api's concern.
+                  - **Chosen: a dedicated Slack Incoming Webhook**, scoped to one channel and
+                    able only to post text there (it cannot call any other Slack API method),
+                    stored as this repo's own `SLACK_METABASE_WEBHOOK_URL` secret. This is the
+                    same *class* of credential corona-api's own code already keeps separate
+                    from its bot token (`lib/services/slack.js`'s `webhookUrl` vs. `token`) —
+                    just an independent instance of it, scoped narrowly enough that having it
+                    live only in this repo isn't the kind of duplication that's hard to
+                    maintain.
+
+                  🤖 Generated by the `bump-metabase` GitHub Actions workflow.
+                  BODY
+                  )
+
+                  node -e '
+                  let body = require("fs").readFileSync(0, "utf8");
+                  for (const key of ["FROM", "TO", "KIND_NOTE", "CHANGELOG_URL", "CHANGELOG_SUMMARY"]) {
+                      body = body.split(`$${key}`).join(process.env[key] ?? "");
+                  }
+                  require("fs").writeFileSync("/tmp/pr-body.md", body);
+                  ' <<< "$template"
+
+                  pr_url=$(gh pr create --title "Bump Metabase $FROM -> $TO" --body-file /tmp/pr-body.md)
+                  echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
+
+            - name: Notify Slack
+              if: steps.pr.outputs.pr_url != ''
+              env:
+                  SLACK_WEBHOOK_URL: ${{ secrets.SLACK_METABASE_WEBHOOK_URL }}
+                  FROM: ${{ steps.check.outputs.from }}
+                  TO: ${{ steps.check.outputs.to }}
+                  KIND: ${{ steps.check.outputs.kind }}
+                  CHANGELOG_URL: ${{ steps.check.outputs.changelog_url }}
+                  PR_URL: ${{ steps.pr.outputs.pr_url }}
+              run: |
+                  # jq builds valid JSON from the env vars above, so nothing here
+                  # needs manual quote-escaping.
+                  payload=$(jq -n \
+                    --arg text "Metabase $FROM → $TO ($KIND): $PR_URL
+                  Release notes: $CHANGELOG_URL" \
+                    '{text: $text}')
+
+                  curl -sf -X POST -H 'Content-type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL"
