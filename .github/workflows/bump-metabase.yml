@@ -121,6 +121,15 @@ jobs:
                   git config user.email "github-actions[bot]@users.noreply.github.com"
                   git switch -c "$BRANCH"
                   git commit -am "Bump Metabase $FROM -> $TO (major)"
+
+                  # A branch with this exact name can already exist on the remote from a
+                  # previous run whose PR was later closed (not merged) without deleting
+                  # the branch — the step above only checks for an OPEN PR on this head,
+                  # not whether the branch itself still exists. By this point we've already
+                  # confirmed no open PR uses it, so any remote copy is stale bot output;
+                  # delete it before pushing fresh rather than fail on a rejected non-
+                  # fast-forward push. `|| true` because the common case is it doesn't exist.
+                  git push origin --delete "$BRANCH" 2>/dev/null || true
                   git push -u origin "$BRANCH"
 
                   KIND_NOTE="⚠️ **Major** release — Metabase's versioning inverts semver, so this is a new feature line that can carry an **irreversible app-DB migration**. Back up the app DB before merging/deploying."
@@ -211,17 +220,46 @@ jobs:
                   COMMIT_URL: ${{ steps.direct_commit.outputs.commit_url }}
               run: |
                   if [ -n "$PR_URL" ]; then
-                    ACTION_LINE="PR (needs review — possible app-DB migration): $PR_URL"
+                    ACTION_URL="$PR_URL"
+                    ACTION_LABEL="View PR"
+                    STATUS_LINE="PR opened — needs review (possible app-DB migration)"
                   else
-                    ACTION_LINE="Committed directly to master: $COMMIT_URL"
+                    ACTION_URL="$COMMIT_URL"
+                    ACTION_LABEL="View commit"
+                    STATUS_LINE="Committed directly to master"
                   fi
 
-                  # jq builds valid JSON from the env vars above, so nothing here
-                  # needs manual quote-escaping.
+                  # jq builds valid JSON from the env vars above, so nothing here needs
+                  # manual quote-escaping. `blocks` adds a clickable button — Incoming
+                  # Webhooks accept the same Block Kit payload as chat.postMessage, and
+                  # a button with `url` just opens the link (no interactivity endpoint
+                  # needed). `text` stays as the plain fallback shown in notifications.
                   payload=$(jq -n \
-                    --arg text "Metabase $FROM → $TO ($KIND)
-                  $ACTION_LINE
-                  Release notes: $CHANGELOG_URL" \
-                    '{text: $text}')
+                    --arg fallback "Metabase $FROM → $TO ($KIND): $ACTION_URL" \
+                    --arg header "Metabase $FROM → $TO ($KIND)" \
+                    --arg status "$STATUS_LINE" \
+                    --arg changelog "Release notes: $CHANGELOG_URL" \
+                    --arg action_label "$ACTION_LABEL" \
+                    --arg action_url "$ACTION_URL" \
+                    '{
+                      text: $fallback,
+                      blocks: [
+                        {
+                          type: "section",
+                          text: { type: "mrkdwn", text: ("*" + $header + "*\n" + $status + "\n" + $changelog) }
+                        },
+                        {
+                          type: "actions",
+                          elements: [
+                            {
+                              type: "button",
+                              text: { type: "plain_text", text: $action_label, emoji: true },
+                              url: $action_url,
+                              style: "primary"
+                            }
+                          ]
+                        }
+                      ]
+                    }')
 
                   curl -sf -X POST -H 'Content-type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL"
