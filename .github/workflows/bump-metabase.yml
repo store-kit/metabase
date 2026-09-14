@@ -8,10 +8,17 @@
 #     `minimumReleaseAge` convention already used in corona-admin/renovate.json),
 #     so a release that gets hot-fixed or yanked shortly after publishing is
 #     skipped automatically.
-#   - Opens a PR only. It never auto-merges, regardless of whether the bump is
-#     a same-line bugfix ("minor" in Metabase's own — inverted — versioning)
-#     or a new feature line ("major", which can carry an irreversible app-DB
-#     migration). A human always reviews and merges.
+#   - Opens a PR ONLY for a "major" bump — Metabase's versioning inverts
+#     semver, so this is a new feature line that can ship an irreversible
+#     app-DB migration, and a human always reviews and merges it. A "minor"
+#     bump (same feature line, bug/security fixes only) is committed directly
+#     to `master` — see `requiresReview()` in `scripts/metabase-release.mjs`
+#     for the single source of truth on which is which. Neither path ever
+#     auto-merges a major bump; there is nothing to merge for a minor one.
+#   - The direct-to-master path only runs when the workflow is actually
+#     running on `master` (see the `github.ref` guard below) — a manual
+#     `workflow_dispatch` run from another branch must not push that branch's
+#     unrelated Dockerfile state straight to master.
 #   - Never crosses the 0.x <-> 1.x boundary (OSS vs Enterprise) automatically.
 #   - Never touches Slack credentials belonging to any other StoreKit
 #     repo/service. It posts through a webhook scoped only to this repo and
@@ -52,9 +59,31 @@ jobs:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: node scripts/check-and-bump.mjs
 
+            - name: Apply a minor bump directly to master
+              id: direct_commit
+              if: >-
+                  steps.check.outputs.should_bump == 'true' &&
+                  steps.check.outputs.requires_review == 'false' &&
+                  github.ref == 'refs/heads/master'
+              env:
+                  FROM: ${{ steps.check.outputs.from }}
+                  TO: ${{ steps.check.outputs.to }}
+              run: |
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+                  git commit -am "Bump Metabase $FROM -> $TO (minor)"
+                  # Explicit refspec, not a plain `git push` — robust regardless
+                  # of whether actions/checkout left HEAD attached to master or
+                  # detached at its commit.
+                  git push origin HEAD:refs/heads/master
+                  echo "applied=true" >> "$GITHUB_OUTPUT"
+                  # GITHUB_REPOSITORY is one of the env vars Actions injects into every
+                  # step automatically — no `${{ }}` expression needed for it.
+                  echo "commit_url=https://github.com/$GITHUB_REPOSITORY/commit/$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
             - name: Skip if a PR for this branch is already open
               id: existing_pr
-              if: steps.check.outputs.should_bump == 'true'
+              if: steps.check.outputs.should_bump == 'true' && steps.check.outputs.requires_review == 'true'
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   TO: ${{ steps.check.outputs.to }}
@@ -70,27 +99,28 @@ jobs:
 
             - name: Open the bump PR
               id: pr
-              if: steps.check.outputs.should_bump == 'true' && steps.existing_pr.outputs.already_open == 'false'
+              # requires_review == 'true' means kind == 'major' (see requiresReview()
+              # in scripts/metabase-release.mjs) — this step only ever handles majors;
+              # minors take the direct-commit path above and never reach here.
+              if: >-
+                  steps.check.outputs.should_bump == 'true' &&
+                  steps.check.outputs.requires_review == 'true' &&
+                  steps.existing_pr.outputs.already_open == 'false'
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   BRANCH: ${{ steps.existing_pr.outputs.branch }}
                   FROM: ${{ steps.check.outputs.from }}
                   TO: ${{ steps.check.outputs.to }}
-                  KIND: ${{ steps.check.outputs.kind }}
                   CHANGELOG_URL: ${{ steps.check.outputs.changelog_url }}
                   CHANGELOG_SUMMARY: ${{ steps.check.outputs.changelog_summary }}
               run: |
                   git config user.name "github-actions[bot]"
                   git config user.email "github-actions[bot]@users.noreply.github.com"
                   git switch -c "$BRANCH"
-                  git commit -am "Bump Metabase $FROM -> $TO ($KIND)"
+                  git commit -am "Bump Metabase $FROM -> $TO (major)"
                   git push -u origin "$BRANCH"
 
-                  if [ "$KIND" = "major" ]; then
-                    KIND_NOTE="⚠️ **Major** release — Metabase's versioning inverts semver, so this is a new feature line that can carry an **irreversible app-DB migration**. Back up the app DB before merging/deploying."
-                  else
-                    KIND_NOTE="**Minor** release — same feature line, bug/security fixes only."
-                  fi
+                  KIND_NOTE="⚠️ **Major** release — Metabase's versioning inverts semver, so this is a new feature line that can carry an **irreversible app-DB migration**. Back up the app DB before merging/deploying."
                   export KIND_NOTE
 
                   # The heredoc delimiter is quoted ('BODY') so bash performs no
@@ -116,8 +146,11 @@ jobs:
 
                   ## Automation (DATA-91)
                   Opened automatically by the scheduled `bump-metabase.yml` workflow — checks
-                  GitHub releases for `metabase/metabase`, applies a 7-day cool-off, and opens
-                  a PR only (never auto-merges). Manual bumps and this workflow can coexist.
+                  GitHub releases for `metabase/metabase` and applies a 7-day cool-off. This PR
+                  exists because the bump is classified as **major**; a **minor** bump (same
+                  feature line, bug/security fixes only) is committed directly to `master` by
+                  the same workflow, without a PR. This PR never auto-merges. Manual bumps and
+                  this workflow can coexist.
 
                   ### Design tradeoffs considered for the Slack notification
                   This repo has no runtime and no existing GitHub<->corona-api trust
@@ -164,7 +197,7 @@ jobs:
                   echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
 
             - name: Notify Slack
-              if: steps.pr.outputs.pr_url != ''
+              if: steps.direct_commit.outputs.applied == 'true' || steps.pr.outputs.pr_url != ''
               env:
                   SLACK_WEBHOOK_URL: ${{ secrets.SLACK_METABASE_WEBHOOK_URL }}
                   FROM: ${{ steps.check.outputs.from }}
@@ -172,11 +205,19 @@ jobs:
                   KIND: ${{ steps.check.outputs.kind }}
                   CHANGELOG_URL: ${{ steps.check.outputs.changelog_url }}
                   PR_URL: ${{ steps.pr.outputs.pr_url }}
+                  COMMIT_URL: ${{ steps.direct_commit.outputs.commit_url }}
               run: |
+                  if [ -n "$PR_URL" ]; then
+                    ACTION_LINE="PR (needs review — possible app-DB migration): $PR_URL"
+                  else
+                    ACTION_LINE="Committed directly to master: $COMMIT_URL"
+                  fi
+
                   # jq builds valid JSON from the env vars above, so nothing here
                   # needs manual quote-escaping.
                   payload=$(jq -n \
-                    --arg text "Metabase $FROM → $TO ($KIND): $PR_URL
+                    --arg text "Metabase $FROM → $TO ($KIND)
+                  $ACTION_LINE
                   Release notes: $CHANGELOG_URL" \
                     '{text: $text}')
 

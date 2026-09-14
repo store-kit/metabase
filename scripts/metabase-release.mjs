@@ -50,6 +50,16 @@ export function classifyBump(from, to) {
     return 'same';
 }
 
+// Whether a human must review this bump before it takes effect. Only a
+// "major" bump (a new feature line that can ship an irreversible app-DB
+// migration) needs a PR; a "minor" bump (same feature line, bug/security
+// fixes only) is safe to apply directly. Single source of truth for the
+// workflow's branching, so the policy lives in one tested place instead of
+// being duplicated across multiple `if:` conditions in the YAML.
+export function requiresReview(kind) {
+    return kind === 'major';
+}
+
 export function isEligible(release, now, coolOffDays) {
     if (release.draft || release.prerelease) {
         return false;
