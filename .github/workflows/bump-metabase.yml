@@ -240,7 +240,7 @@ jobs:
                     # not the leading semver-looking digit (which is the OSS/Enterprise
                     # edition and does NOT change here) — that ambiguity is exactly what
                     # confused a reader of an earlier, terser version of this message.
-                    STATUS_LINE="⚠️ *Major* release in Metabase's own versioning — a new feature line (the middle version number changed), which can include an *irreversible database migration*. This is separate from the leading 0.x/1.x edition number, which is unaffected here. Merged automatically — no manual review step."
+                    STATUS_LINE="⚠️ *Major* release in Metabase's own versioning — a new feature line, which can include an *irreversible database migration*. Merged automatically — no manual review step."
                   else
                     ACTION_URL="$COMMIT_URL"
                     ACTION_LABEL="View commit"
