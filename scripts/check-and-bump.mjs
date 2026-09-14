@@ -10,7 +10,7 @@
 
 import { readFile, writeFile, appendFile } from 'node:fs/promises';
 
-import { pickNextRelease, usesPullRequestFlow } from './metabase-release.mjs';
+import { pickNextRelease, usesPullRequestFlow, toSlackMrkdwn } from './metabase-release.mjs';
 
 const COOL_OFF_DAYS = 7; // matches corona-admin/renovate.json's minimumReleaseAge convention
 const RELEASES_URL = 'https://api.github.com/repos/metabase/metabase/releases?per_page=100';
@@ -93,14 +93,25 @@ async function main() {
 
     await writeFile(DOCKERFILE_PATH, updated);
 
+    // The GitHub release page for this exact tag is the only official source
+    // that's actually version-specific — metabase.com's own /releases and
+    // /changelog pages only go down to the major-version line (e.g.
+    // "Metabase 63"), not individual patch releases like this one.
+    const changelogUrl = releaseObject?.html_url ?? `https://github.com/metabase/metabase/releases/tag/${decision.to}`;
+    const changelogSummary = summarize(releaseObject?.body);
+
     await writeOutputs({
         should_bump: 'true',
         from: decision.from,
         to: decision.to,
         kind: decision.kind,
         opens_pr: String(usesPullRequestFlow(decision.kind)),
-        changelog_url: releaseObject?.html_url ?? `https://github.com/metabase/metabase/releases/tag/${decision.to}`,
-        changelog_summary: summarize(releaseObject?.body)
+        changelog_url: changelogUrl,
+        changelog_summary: changelogSummary,
+        // Separate from changelog_summary because the two render into
+        // different markdown dialects: the PR body is real GitHub-flavored
+        // markdown, the Slack message needs Slack mrkdwn.
+        changelog_summary_slack: toSlackMrkdwn(changelogSummary)
     });
 
     console.log(`Bumping ${decision.from} -> ${decision.to} (${decision.kind}).`);

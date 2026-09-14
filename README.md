@@ -33,7 +33,12 @@ plain inline links in the message text, not Block Kit buttons, since a
 button is an interactive element and Slack forwards its click to whichever
 app's Interactivity Request URL is configured for the app this webhook
 belongs to (misrouting into unrelated logic if that app is shared with
-something else, as happened here once).
+something else, as happened here once). The Slack message includes the
+official release notes for the exact version bumped (converted from GitHub-
+flavored markdown to Slack mrkdwn — see `toSlackMrkdwn()`) plus a link to
+that release's GitHub page and a secondary link to metabase.com's general
+changelog (not version-specific — metabase.com only breaks releases down by
+major line, e.g. "Metabase 63").
 
 The version-parsing, cool-off and major/minor classification rules (Metabase's
 scheme inverts semver — see comments in `scripts/metabase-release.mjs`) are

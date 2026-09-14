@@ -6,7 +6,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseVersion, classifyBump, isEligible, pickNextRelease, usesPullRequestFlow } from './metabase-release.mjs';
+import {
+    parseVersion,
+    classifyBump,
+    isEligible,
+    pickNextRelease,
+    usesPullRequestFlow,
+    toSlackMrkdwn
+} from './metabase-release.mjs';
 
 test('parseVersion accepts a 3-part release tag', () => {
     assert.deepEqual(parseVersion('v0.61.2'), { epoch: 0, major: 61, patch: 2, raw: 'v0.61.2' });
@@ -114,4 +121,30 @@ test('pickNextRelease: returns null when nothing eligible is newer than current'
     ];
 
     assert.equal(pickNextRelease('v0.61.2', releases, now, 7), null);
+});
+
+test('toSlackMrkdwn: converts bold and links to Slack syntax', () => {
+    assert.equal(toSlackMrkdwn('**bold**'), '*bold*');
+    assert.equal(
+        toSlackMrkdwn('See our [upgrading instructions](https://example.com/docs).'),
+        'See our <https://example.com/docs|upgrading instructions>.'
+    );
+});
+
+test('toSlackMrkdwn: converts a markdown heading to a bold line', () => {
+    assert.equal(toSlackMrkdwn('## Upgrading\n\nBack up first.'), '*Upgrading*\n\nBack up first.');
+});
+
+test('toSlackMrkdwn: leaves blockquotes and inline code as-is (already valid Slack mrkdwn)', () => {
+    assert.equal(
+        toSlackMrkdwn('> Back up your database!\n\nRun `metabase/metabase:v0.63.16`.'),
+        '> Back up your database!\n\nRun `metabase/metabase:v0.63.16`.'
+    );
+});
+
+test('toSlackMrkdwn: does not crash on markdown truncated mid-token (600-char cutoff can land here)', () => {
+    // A dangling "**" or "[text" with no closing counterpart is left as literal
+    // text rather than producing a mismatched replacement or throwing.
+    assert.equal(toSlackMrkdwn('this is **unterminated bold'), 'this is **unterminated bold');
+    assert.equal(toSlackMrkdwn('a [dangling link with no url'), 'a [dangling link with no url');
 });

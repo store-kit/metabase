@@ -133,3 +133,17 @@ export function pickNextRelease(currentTag, releases, now, coolOffDays) {
         kind: classifyBump(current, best)
     };
 }
+
+// Converts the subset of GitHub-flavored markdown that actually shows up in
+// Metabase's release notes into Slack mrkdwn, so the changelog summary can be
+// posted straight into the Slack message instead of only linked to. `>`
+// blockquotes and `` `code` `` spans are valid in both dialects already, so
+// they're left untouched. Regexes only match complete, balanced tokens — a
+// truncated "**" or "[text" with no closing counterpart (the 600-char summary
+// cutoff can land mid-token) is left as literal text rather than mangled.
+export function toSlackMrkdwn(markdown) {
+    return markdown
+        .replace(/^#{1,6}\s+(.+)$/gm, '*$1*') // "## Heading" -> "*Heading*"
+        .replace(/\*\*(.+?)\*\*/g, '*$1*') // "**bold**" -> "*bold*"
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<$2|$1>'); // "[text](url)" -> "<url|text>"
+}

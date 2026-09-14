@@ -227,11 +227,18 @@ jobs:
                   FROM: ${{ steps.check.outputs.from }}
                   TO: ${{ steps.check.outputs.to }}
                   CHANGELOG_URL: ${{ steps.check.outputs.changelog_url }}
+                  CHANGELOG_SUMMARY_SLACK: ${{ steps.check.outputs.changelog_summary_slack }}
                   PR_URL: ${{ steps.pr.outputs.pr_url }}
                   COMMIT_URL: ${{ steps.direct_commit.outputs.commit_url }}
                   # Deploys page, not a per-service URL Render exposes anywhere we can
                   # derive it from — hardcoded per the team's own Render workspace.
                   RENDER_DEPLOYS_URL: https://dashboard.render.com/web/srv-bqhhtu08atn8glbq2fgg/deploys
+                  # General "what's new" page, requested in feedback — NOT version-
+                  # specific (metabase.com only breaks releases down by major line,
+                  # e.g. "Metabase 63"; there's no page for a single patch release).
+                  # CHANGELOG_URL above is the only source that's actually specific to
+                  # $TO — this is a secondary, broader-context link, labeled as such.
+                  METABASE_CHANGELOG_URL: https://www.metabase.com/changelog
               run: |
                   if [ -n "$PR_URL" ]; then
                     ACTION_URL="$PR_URL"
@@ -265,6 +272,8 @@ jobs:
                     --arg action_url "$ACTION_URL" \
                     --arg render_url "$RENDER_DEPLOYS_URL" \
                     --arg changelog_url "$CHANGELOG_URL" \
+                    --arg metabase_changelog_url "$METABASE_CHANGELOG_URL" \
+                    --arg summary "$CHANGELOG_SUMMARY_SLACK" \
                     '{
                       text: $fallback,
                       blocks: [
@@ -276,9 +285,15 @@ jobs:
                               "*" + $header + "*\n" + $status + "\n"
                               + "<" + $action_url + "|" + $action_label + "> · "
                               + "<" + $render_url + "|View in Render> · "
-                              + "<" + $changelog_url + "|Release notes>"
+                              + "<" + $changelog_url + "|Release notes for this version> · "
+                              + "<" + $metabase_changelog_url + "|All Metabase release notes>"
                             )
                           }
+                        },
+                        { type: "divider" },
+                        {
+                          type: "section",
+                          text: { type: "mrkdwn", text: ("*What changed:*\n" + $summary) }
                         }
                       ]
                     }')
