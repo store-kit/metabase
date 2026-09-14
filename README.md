@@ -16,16 +16,24 @@ at least 7 days after a release is published before considering it (a release
 that gets hot-fixed or yanked shortly after publishing is skipped), and bumps
 the `Dockerfile`'s pinned tag:
 
+Both are fully automatic — there is no manual review step:
+
 - **Major** (a new Metabase feature line — can ship an irreversible app-DB
-  migration): opens a PR only. Never auto-merges; a human reviews and merges.
+  migration): opens a PR and merges it immediately, leaving a reviewable
+  diff/audit trail behind even though nothing blocks on it.
 - **Minor** (same feature line, bug/security fixes only): commits directly to
-  `master`. No PR, since there's no migration risk to review.
+  `master`. No PR, since there's no need for even that trail.
 
 Neither path ever crosses the `0.x` (OSS) / `1.x` (Enterprise) boundary
-automatically. See `requiresReview()` in `scripts/metabase-release.mjs` for
-the single source of truth on which bump needs review. It also posts to Slack
-via a dedicated, channel-scoped Incoming Webhook (`SLACK_METABASE_WEBHOOK_URL`
-repo secret) once either path completes.
+automatically. See `usesPullRequestFlow()` in `scripts/metabase-release.mjs`
+for the single source of truth on which path a bump takes. It also posts to
+Slack via a dedicated, channel-scoped Incoming Webhook
+(`SLACK_METABASE_WEBHOOK_URL` repo secret) once either path completes — as
+plain inline links in the message text, not Block Kit buttons, since a
+button is an interactive element and Slack forwards its click to whichever
+app's Interactivity Request URL is configured for the app this webhook
+belongs to (misrouting into unrelated logic if that app is shared with
+something else, as happened here once).
 
 The version-parsing, cool-off and major/minor classification rules (Metabase's
 scheme inverts semver — see comments in `scripts/metabase-release.mjs`) are

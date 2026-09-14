@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseVersion, classifyBump, isEligible, pickNextRelease, requiresReview } from './metabase-release.mjs';
+import { parseVersion, classifyBump, isEligible, pickNextRelease, usesPullRequestFlow } from './metabase-release.mjs';
 
 test('parseVersion accepts a 3-part release tag', () => {
     assert.deepEqual(parseVersion('v0.61.2'), { epoch: 0, major: 61, patch: 2, raw: 'v0.61.2' });
@@ -101,9 +101,9 @@ test('pickNextRelease: skips too-recent, rolling/nightly, and epoch-jump release
     });
 });
 
-test('requiresReview: only a major bump (irreversible app-DB migration risk) requires a human PR review; minor is safe to apply directly', () => {
-    assert.equal(requiresReview('major'), true);
-    assert.equal(requiresReview('minor'), false);
+test('usesPullRequestFlow: only a major bump (irreversible app-DB migration risk) goes through an (auto-merged) PR; minor commits directly', () => {
+    assert.equal(usesPullRequestFlow('major'), true);
+    assert.equal(usesPullRequestFlow('minor'), false);
 });
 
 test('pickNextRelease: returns null when nothing eligible is newer than current', () => {

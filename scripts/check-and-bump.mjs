@@ -10,7 +10,7 @@
 
 import { readFile, writeFile, appendFile } from 'node:fs/promises';
 
-import { pickNextRelease, requiresReview } from './metabase-release.mjs';
+import { pickNextRelease, usesPullRequestFlow } from './metabase-release.mjs';
 
 const COOL_OFF_DAYS = 7; // matches corona-admin/renovate.json's minimumReleaseAge convention
 const RELEASES_URL = 'https://api.github.com/repos/metabase/metabase/releases?per_page=100';
@@ -98,7 +98,7 @@ async function main() {
         from: decision.from,
         to: decision.to,
         kind: decision.kind,
-        requires_review: String(requiresReview(decision.kind)),
+        opens_pr: String(usesPullRequestFlow(decision.kind)),
         changelog_url: releaseObject?.html_url ?? `https://github.com/metabase/metabase/releases/tag/${decision.to}`,
         changelog_summary: summarize(releaseObject?.body)
     });
