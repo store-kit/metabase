@@ -78,7 +78,10 @@ jobs:
                   git push origin HEAD:refs/heads/master
                   echo "applied=true" >> "$GITHUB_OUTPUT"
                   # GITHUB_REPOSITORY is one of the env vars Actions injects into every
-                  # step automatically — no `${{ }}` expression needed for it.
+                  # step automatically — no Actions expression syntax needed for it.
+                  # (Deliberately not writing that syntax literally in this comment:
+                  # an empty one inside a run: block is itself a template-expansion
+                  # parse error, since Actions expands it here too, even in comments.)
                   echo "commit_url=https://github.com/$GITHUB_REPOSITORY/commit/$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
             - name: Skip if a PR for this branch is already open
