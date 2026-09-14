@@ -8,13 +8,15 @@
 #     `minimumReleaseAge` convention already used in corona-admin/renovate.json),
 #     so a release that gets hot-fixed or yanked shortly after publishing is
 #     skipped automatically.
-#   - Opens a PR ONLY for a "major" bump — Metabase's versioning inverts
-#     semver, so this is a new feature line that can ship an irreversible
-#     app-DB migration, and a human always reviews and merges it. A "minor"
-#     bump (same feature line, bug/security fixes only) is committed directly
-#     to `master` — see `requiresReview()` in `scripts/metabase-release.mjs`
-#     for the single source of truth on which is which. Neither path ever
-#     auto-merges a major bump; there is nothing to merge for a minor one.
+#   - Every eligible bump is applied automatically — there is no manual
+#     review step. A "major" bump (Metabase's own versioning: a new feature
+#     line that can ship an irreversible app-DB migration) goes through a
+#     PR that is opened and merged immediately, so a reviewable diff/audit
+#     trail exists afterwards even though nothing blocks on it; a "minor"
+#     bump (same feature line, bug/security fixes only) commits straight to
+#     `master` since there's no need for even that trail. See
+#     `usesPullRequestFlow()` in `scripts/metabase-release.mjs` for the
+#     single source of truth on which path a given bump takes.
 #   - The direct-to-master path only runs when the workflow is actually
 #     running on `master` (see the `github.ref` guard below) — a manual
 #     `workflow_dispatch` run from another branch must not push that branch's
@@ -63,7 +65,7 @@ jobs:
               id: direct_commit
               if: >-
                   steps.check.outputs.should_bump == 'true' &&
-                  steps.check.outputs.requires_review == 'false' &&
+                  steps.check.outputs.opens_pr == 'false' &&
                   github.ref == 'refs/heads/master'
               env:
                   FROM: ${{ steps.check.outputs.from }}
@@ -86,7 +88,7 @@ jobs:
 
             - name: Skip if a PR for this branch is already open
               id: existing_pr
-              if: steps.check.outputs.should_bump == 'true' && steps.check.outputs.requires_review == 'true'
+              if: steps.check.outputs.should_bump == 'true' && steps.check.outputs.opens_pr == 'true'
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   TO: ${{ steps.check.outputs.to }}
@@ -100,14 +102,14 @@ jobs:
                     echo "already_open=false" >> "$GITHUB_OUTPUT"
                   fi
 
-            - name: Open the bump PR
+            - name: Open and auto-merge the bump PR
               id: pr
-              # requires_review == 'true' means kind == 'major' (see requiresReview()
+              # opens_pr == 'true' means kind == 'major' (see usesPullRequestFlow()
               # in scripts/metabase-release.mjs) — this step only ever handles majors;
               # minors take the direct-commit path above and never reach here.
               if: >-
                   steps.check.outputs.should_bump == 'true' &&
-                  steps.check.outputs.requires_review == 'true' &&
+                  steps.check.outputs.opens_pr == 'true' &&
                   steps.existing_pr.outputs.already_open == 'false'
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -132,7 +134,7 @@ jobs:
                   git push origin --delete "$BRANCH" 2>/dev/null || true
                   git push -u origin "$BRANCH"
 
-                  KIND_NOTE="⚠️ **Major** release — Metabase's versioning inverts semver, so this is a new feature line that can carry an **irreversible app-DB migration**. Back up the app DB before merging/deploying."
+                  KIND_NOTE="⚠️ **Major** release — Metabase's versioning inverts semver, so this is a new feature line that can carry an **irreversible app-DB migration**. This PR is merged automatically (no manual review step); if that risk concerns you, check the app DB was backed up before it deployed."
                   export KIND_NOTE
 
                   # The heredoc delimiter is quoted ('BODY') so bash performs no
@@ -157,12 +159,13 @@ jobs:
                   </details>
 
                   ## Automation (DATA-91)
-                  Opened automatically by the scheduled `bump-metabase.yml` workflow — checks
-                  GitHub releases for `metabase/metabase` and applies a 7-day cool-off. This PR
-                  exists because the bump is classified as **major**; a **minor** bump (same
-                  feature line, bug/security fixes only) is committed directly to `master` by
-                  the same workflow, without a PR. This PR never auto-merges. Manual bumps and
-                  this workflow can coexist.
+                  Opened and merged automatically by the scheduled `bump-metabase.yml`
+                  workflow — checks GitHub releases for `metabase/metabase` and applies a
+                  7-day cool-off. This PR exists (rather than a direct commit) because the
+                  bump is classified as **major**, so it's worth a reviewable diff/audit
+                  trail even though nothing blocked on it; a **minor** bump (same feature
+                  line, bug/security fixes only) is committed directly to `master` instead.
+                  Manual bumps and this workflow can coexist.
 
                   ### Design tradeoffs considered for the Slack notification
                   This repo has no runtime and no existing GitHub<->corona-api trust
@@ -208,56 +211,74 @@ jobs:
                   pr_url=$(gh pr create --title "Bump Metabase $FROM -> $TO" --body-file /tmp/pr-body.md)
                   echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
 
+                  # Merge immediately — no manual review step. This repo has no branch
+                  # protection on master (checked: GET /branches/master/protection ->
+                  # 404), so a plain merge needs no --admin override. The PR object still
+                  # exists afterwards at the same URL, giving a reviewable diff/audit
+                  # trail for a release that can carry a DB migration, even though
+                  # nothing blocked on it. --delete-branch also means there's no leftover
+                  # metabase-bump/$TO branch to collide with on a future run.
+                  gh pr merge --merge --delete-branch "$pr_url"
+
             - name: Notify Slack
               if: steps.direct_commit.outputs.applied == 'true' || steps.pr.outputs.pr_url != ''
               env:
                   SLACK_WEBHOOK_URL: ${{ secrets.SLACK_METABASE_WEBHOOK_URL }}
                   FROM: ${{ steps.check.outputs.from }}
                   TO: ${{ steps.check.outputs.to }}
-                  KIND: ${{ steps.check.outputs.kind }}
                   CHANGELOG_URL: ${{ steps.check.outputs.changelog_url }}
                   PR_URL: ${{ steps.pr.outputs.pr_url }}
                   COMMIT_URL: ${{ steps.direct_commit.outputs.commit_url }}
+                  # Deploys page, not a per-service URL Render exposes anywhere we can
+                  # derive it from — hardcoded per the team's own Render workspace.
+                  RENDER_DEPLOYS_URL: https://dashboard.render.com/web/srv-bqhhtu08atn8glbq2fgg/deploys
               run: |
                   if [ -n "$PR_URL" ]; then
                     ACTION_URL="$PR_URL"
                     ACTION_LABEL="View PR"
-                    STATUS_LINE="PR opened — needs review (possible app-DB migration)"
+                    # Spelled out on purpose: "major" here is Metabase's own versioning,
+                    # not the leading semver-looking digit (which is the OSS/Enterprise
+                    # edition and does NOT change here) — that ambiguity is exactly what
+                    # confused a reader of an earlier, terser version of this message.
+                    STATUS_LINE="⚠️ *Major* release in Metabase's own versioning — a new feature line (the middle version number changed), which can include an *irreversible database migration*. This is separate from the leading 0.x/1.x edition number, which is unaffected here. Merged automatically — no manual review step."
                   else
                     ACTION_URL="$COMMIT_URL"
                     ACTION_LABEL="View commit"
-                    STATUS_LINE="Committed directly to master"
+                    STATUS_LINE="*Minor* release — same feature line, bug/security fixes only. Committed directly to master."
                   fi
 
                   # jq builds valid JSON from the env vars above, so nothing here needs
-                  # manual quote-escaping. `blocks` adds a clickable button — Incoming
-                  # Webhooks accept the same Block Kit payload as chat.postMessage, and
-                  # a button with `url` just opens the link (no interactivity endpoint
-                  # needed). `text` stays as the plain fallback shown in notifications.
+                  # manual quote-escaping. Links are plain mrkdwn `<url|label>` inline in
+                  # the text, not Block Kit buttons: a button is an interactive element,
+                  # and Slack forwards its click as a block_actions payload to whichever
+                  # app's Interactivity Request URL is configured for the app this
+                  # webhook belongs to — if that's an app already wired up for something
+                  # else (as it was here), the click gets misrouted into unrelated logic
+                  # with a confusing error, even though the link itself still opens fine.
+                  # An inline link is not an interactive element at all, so there's
+                  # nothing for Slack to forward anywhere.
                   payload=$(jq -n \
-                    --arg fallback "Metabase $FROM → $TO ($KIND): $ACTION_URL" \
-                    --arg header "Metabase $FROM → $TO ($KIND)" \
+                    --arg fallback "Metabase $FROM → $TO: $ACTION_URL" \
+                    --arg header "Metabase $FROM → $TO" \
                     --arg status "$STATUS_LINE" \
-                    --arg changelog "Release notes: $CHANGELOG_URL" \
                     --arg action_label "$ACTION_LABEL" \
                     --arg action_url "$ACTION_URL" \
+                    --arg render_url "$RENDER_DEPLOYS_URL" \
+                    --arg changelog_url "$CHANGELOG_URL" \
                     '{
                       text: $fallback,
                       blocks: [
                         {
                           type: "section",
-                          text: { type: "mrkdwn", text: ("*" + $header + "*\n" + $status + "\n" + $changelog) }
-                        },
-                        {
-                          type: "actions",
-                          elements: [
-                            {
-                              type: "button",
-                              text: { type: "plain_text", text: $action_label, emoji: true },
-                              url: $action_url,
-                              style: "primary"
-                            }
-                          ]
+                          text: {
+                            type: "mrkdwn",
+                            text: (
+                              "*" + $header + "*\n" + $status + "\n"
+                              + "<" + $action_url + "|" + $action_label + "> · "
+                              + "<" + $render_url + "|View in Render> · "
+                              + "<" + $changelog_url + "|Release notes>"
+                            )
+                          }
                         }
                       ]
                     }')
