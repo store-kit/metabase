@@ -1,0 +1,8 @@
+{
+  "name": "@store-kit/metabase",
+  "private": true,
+  "description": "Deploy source + scheduled version-bump automation for the Render-hosted Metabase instance (DATA-91).",
+  "scripts": {
+    "test": "node --test scripts/*.test.mjs"
+  }
+}
